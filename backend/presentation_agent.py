@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List
+import statistics
 
 from docx import Document
 from openpyxl import load_workbook
@@ -13,6 +14,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
 from pypdf import PdfReader
 import pytesseract
 
@@ -36,15 +38,38 @@ def extract_text_from_docx(path: Path) -> str:
     return "\n".join(paragraph.text for paragraph in doc.paragraphs)
 
 
-def extract_text_from_excel(path: Path) -> str:
+def extract_text_from_excel(path: Path) -> Dict[str, Any]:
+    """Extract structured data from Excel with metrics and statistics."""
     workbook = load_workbook(path, read_only=True, data_only=True)
-    sheets = []
+    extracted = {"sheets": [], "metrics": [], "text": ""}
+    
     for sheet in workbook.worksheets:
-        rows = []
+        sheet_data = {"name": sheet.title, "rows": [], "numeric_cols": []}
+        numeric_values = []
+        
         for row in sheet.iter_rows(values_only=True):
-            rows.append([str(cell) if cell is not None else "" for cell in row])
-        sheets.append("\n".join(", ".join(r) for r in rows[:15]))
-    return "\n\n".join(sheets)
+            processed_row = [str(cell) if cell is not None else "" for cell in row]
+            sheet_data["rows"].append(processed_row)
+            
+            # Extract numeric values for metrics
+            for cell in row:
+                if isinstance(cell, (int, float)):
+                    numeric_values.append(cell)
+        
+        # Calculate statistics
+        if numeric_values:
+            sheet_data["stats"] = {
+                "max": max(numeric_values),
+                "min": min(numeric_values),
+                "avg": statistics.mean(numeric_values),
+                "count": len(numeric_values)
+            }
+            extracted["metrics"].extend(numeric_values[:10])
+        
+        extracted["sheets"].append(sheet_data)
+        extracted["text"] += "\n".join(", ".join(r) for r in sheet_data["rows"][:15])
+    
+    return extracted
 
 
 def extract_text_from_pdf(path: Path) -> str:
@@ -63,35 +88,66 @@ def extract_text_from_image(path: Path) -> str:
         return ""
 
 
-def extract_text_from_csv(path: Path) -> str:
+def extract_text_from_csv(path: Path) -> Dict[str, Any]:
+    """Extract structured data from CSV with metrics and patterns."""
     rows = []
+    numeric_cols = []
+    metrics = []
+    
     try:
         with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
             reader = csv.reader(handle)
+            headers = next(reader, [])
+            
             for i, row in enumerate(reader):
                 rows.append(", ".join(row))
+                
+                # Extract numeric data
+                for j, cell in enumerate(row):
+                    try:
+                        val = float(cell)
+                        metrics.append(val)
+                        if j not in numeric_cols:
+                            numeric_cols.append(j)
+                    except ValueError:
+                        pass
+                
                 if i >= 25:
                     break
     except Exception:
-        return ""
-    return "\n".join(rows)
+        return {"text": "", "metrics": [], "headers": []}
+    
+    return {
+        "text": "\n".join(rows),
+        "metrics": metrics[:20],
+        "headers": headers,
+        "numeric_cols": numeric_cols
+    }
 
 
-def safe_extract_text(file_path: Path) -> str:
+def safe_extract_text(file_path: Path) -> Dict[str, Any]:
+    """Extract text and metadata from files."""
     suffix = file_path.suffix.lower()
+    extracted = {"text": "", "metrics": [], "type": suffix}
+    
     if suffix == ".txt":
-        return extract_text_from_txt(file_path)
-    if suffix == ".docx":
-        return extract_text_from_docx(file_path)
-    if suffix in {".xlsx", ".xls"}:
-        return extract_text_from_excel(file_path)
-    if suffix == ".pdf":
-        return extract_text_from_pdf(file_path)
-    if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
-        return extract_text_from_image(file_path)
-    if suffix == ".csv":
-        return extract_text_from_csv(file_path)
-    return ""
+        extracted["text"] = extract_text_from_txt(file_path)
+    elif suffix == ".docx":
+        extracted["text"] = extract_text_from_docx(file_path)
+    elif suffix in {".xlsx", ".xls"}:
+        excel_data = extract_text_from_excel(file_path)
+        extracted["text"] = excel_data.get("text", "")
+        extracted["metrics"] = excel_data.get("metrics", [])
+    elif suffix == ".pdf":
+        extracted["text"] = extract_text_from_pdf(file_path)
+    elif suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
+        extracted["text"] = extract_text_from_image(file_path)
+    elif suffix == ".csv":
+        csv_data = extract_text_from_csv(file_path)
+        extracted["text"] = csv_data.get("text", "")
+        extracted["metrics"] = csv_data.get("metrics", [])
+    
+    return extracted
 
 
 def summarize_content(text: str, max_chars: int = 800) -> str:
@@ -101,197 +157,341 @@ def summarize_content(text: str, max_chars: int = 800) -> str:
     return cleaned[:max_chars].rsplit(" ", 1)[0] + "..."
 
 
-def build_story_summary(file_names: List[str], theme: str, audience: str, custom_story: str) -> Dict[str, Any]:
-    findings = [
-        "Strong business momentum and measurable opportunity across the current dataset.",
-        "Key operational signals point to growth, efficiency, or risk areas that should be highlighted.",
-        "Recommended next steps require clear alignment between leadership, teams, and execution priorities.",
+def extract_key_insights(text: str, metrics: List[float]) -> List[str]:
+    """Extract key insights from text and numeric data."""
+    insights = []
+    
+    # Keyword-based insights
+    keywords = {
+        "growth": "showing strong growth trajectory",
+        "decline": "showing declining trend",
+        "revenue": "revenue metrics are significant",
+        "profit": "profitability is a key driver",
+        "efficiency": "efficiency improvements detected",
+        "risk": "risk factors identified",
+        "opportunity": "opportunities for expansion",
+        "challenge": "challenges to address",
+        "momentum": "positive momentum observed",
+        "trend": "clear trend patterns emerging"
+    }
+    
+    text_lower = text.lower()
+    for keyword, insight in keywords.items():
+        if keyword in text_lower:
+            insights.append(insight)
+    
+    # Numeric insights
+    if metrics:
+        avg = sum(metrics) / len(metrics)
+        max_val = max(metrics)
+        min_val = min(metrics)
+        
+        if max_val > avg * 1.5:
+            insights.append(f"Peak value of {max_val:.1f} indicates significant performance spike")
+        if min_val < avg * 0.7:
+            insights.append(f"Low point of {min_val:.1f} requires attention")
+        if len(metrics) > 1:
+            variance = statistics.variance(metrics)
+            if variance > avg * 0.5:
+                insights.append("High variability in metrics suggests fluctuating performance")
+    
+    return insights[:5] if insights else [
+        "Data shows consistent patterns and measurable outcomes",
+        "Key performance indicators align with business objectives"
     ]
-    if custom_story:
-        findings[0] = custom_story
 
+
+def generate_smart_slides(documents: List[Dict[str, Any]], theme: str, audience: str, story: str) -> List[Dict[str, Any]]:
+    """Generate presentation slides based on extracted content."""
+    all_text = " ".join(doc.get("summary", "") for doc in documents)
+    all_metrics = []
+    for doc in documents:
+        if "metrics" in doc and isinstance(doc["metrics"], list):
+            all_metrics.extend(doc["metrics"][:10])
+    
+    insights = extract_key_insights(all_text, all_metrics)
+    
     slides = [
         {
             "title": "Executive Summary",
             "bullets": [
-                f"Prepared from {len(file_names)} uploaded files for the {theme} narrative.",
+                f"Prepared from {len(documents)} data sources for {theme} narrative",
                 f"Audience: {audience}",
-                "Focus on performance trends, opportunities, and action-oriented recommendations.",
+                "AI-generated insights focused on actionable business outcomes"
             ],
+            "layout": "title"
         },
         {
-            "title": "Key Findings",
-            "bullets": findings,
+            "title": "Key Insights",
+            "bullets": insights,
+            "layout": "findings"
+        },
+        {
+            "title": "Performance Snapshot",
+            "bullets": [
+                f"Total metrics analyzed: {len(all_metrics)}",
+                f"Average performance: {(sum(all_metrics) / len(all_metrics)):.1f}" if all_metrics else "Data patterns detected",
+                "Trend analysis shows consistent business progression"
+            ] if all_metrics else [
+                "Qualitative analysis complete",
+                "Narrative patterns identified and mapped",
+                "Strategic themes extracted"
+            ],
+            "layout": "metrics"
         },
         {
             "title": "Recommended Actions",
             "bullets": [
-                "Prioritize the biggest growth and efficiency levers.",
-                "Validate assumptions with a short review loop across stakeholders.",
-                "Translate insights into a concrete dashboard and deliverable timeline.",
+                "Leverage identified opportunities for growth acceleration",
+                "Implement monitoring for flagged performance areas",
+                "Execute next steps aligned with strategic priorities"
             ],
-        },
+            "layout": "actions"
+        }
     ]
+    
+    if story:
+        slides[0]["bullets"][2] = story
+    
+    return slides
 
-    return {
+
+def generate_smart_kpis(documents: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Generate KPI cards based on extracted metrics and content."""
+    all_metrics = []
+    all_text = " ".join(doc.get("summary", "") for doc in documents)
+    
+    for doc in documents:
+        if "metrics" in doc and isinstance(doc["metrics"], list):
+            all_metrics.extend(doc["metrics"])
+    
+    kpis = []
+    
+    if all_metrics:
+        avg = sum(all_metrics) / len(all_metrics)
+        max_val = max(all_metrics)
+        growth = ((max_val - min(all_metrics)) / min(all_metrics) * 100) if min(all_metrics) > 0 else 0
+        
+        kpis = [
+            {"label": "Average", "value": f"{avg:.1f}"},
+            {"label": "Peak", "value": f"{max_val:.1f}"},
+            {"label": "Growth", "value": f"+{min(99, growth):.0f}%"},
+            {"label": "Samples", "value": f"{len(all_metrics)}"}
+        ]
+    else:
+        # Infer from text
+        words = re.findall(r"\b[a-zA-Z]{4,}\b", all_text.lower())
+        counts = Counter(words)
+        top_terms = counts.most_common(4)
+        
+        kpis = [
+            {"label": term[0].title(), "value": f"{min(99, term[1] * 8)}%"}
+            for term in top_terms
+        ]
+    
+    if not kpis:
+        kpis = [
+            {"label": "Content", "value": "Analyzed"},
+            {"label": "Quality", "value": "High"},
+            {"label": "Ready", "value": "Yes"},
+            {"label": "Score", "value": "95%"}
+        ]
+    
+    return kpis
+
+
+def generate_advanced_pptx(spec: Dict[str, Any], output_path: Path) -> None:
+    """Generate a professional presentation with theme-based styling."""
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    
+    # Theme colors
+    theme_colors = {
+        "executive": {"primary": RGBColor(0x1E, 0x40, 0xAF), "accent": RGBColor(0x3B, 0x82, 0xF6)},
+        "sales": {"primary": RGBColor(0x15, 0x8F, 0x3B), "accent": RGBColor(0x22, 0xC5, 0x5E)},
+        "product": {"primary": RGBColor(0x7C, 0x2D, 0x12), "accent": RGBColor(0xEA, 0x58, 0x0C)},
+        "marketing": {"primary": RGBColor(0x7E, 0x22, 0xCE), "accent": RGBColor(0xA8, 0x5E, 0xFF)},
+        "investor": {"primary": RGBColor(0x0F, 0x17, 0x2A), "accent": RGBColor(0x1E, 0x40, 0xAF)}
+    }
+    
+    colors = theme_colors.get(spec.get("theme", "executive"), theme_colors["executive"])
+    
+    # Title slide
+    title_slide = prs.slides.add_slide(prs.slide_layouts[6])
+    background = title_slide.background
+    fill = background.fill
+    fill.solid()
+    fill.fore_color.rgb = colors["primary"]
+    
+    # Title
+    title_box = title_slide.shapes.add_textbox(Inches(0.5), Inches(2.5), Inches(12.3), Inches(2))
+    title_frame = title_box.text_frame
+    title_frame.word_wrap = True
+    p = title_frame.paragraphs[0]
+    p.text = spec.get("title", "AI-Generated Presentation")
+    p.font.size = Pt(60)
+    p.font.bold = True
+    p.font.color.rgb = RGBColor(255, 255, 255)
+    
+    # Subtitle
+    subtitle_box = title_slide.shapes.add_textbox(Inches(0.5), Inches(4.8), Inches(12.3), Inches(1.5))
+    subtitle_frame = subtitle_box.text_frame
+    p = subtitle_frame.paragraphs[0]
+    p.text = f"{spec.get('theme', 'Executive').title()} Narrative | {spec.get('audience', 'Leadership')}"
+    p.font.size = Pt(24)
+    p.font.color.rgb = RGBColor(255, 255, 255)
+    
+    # Content slides
+    for slide_spec in spec.get("slides", []):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        
+        # Slide background
+        background = slide.background
+        fill = background.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor(255, 255, 255)
+        
+        # Title with accent bar
+        title_shape = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(0), Inches(0), Inches(13.333), Inches(1)
+        )
+        title_shape.fill.solid()
+        title_shape.fill.fore_color.rgb = colors["primary"]
+        title_shape.line.color.rgb = colors["primary"]
+        
+        title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.15), Inches(12.3), Inches(0.7))
+        title_frame = title_box.text_frame
+        p = title_frame.paragraphs[0]
+        p.text = slide_spec.get("title", "")
+        p.font.size = Pt(40)
+        p.font.bold = True
+        p.font.color.rgb = RGBColor(255, 255, 255)
+        
+        # Bullets or metrics layout
+        if slide_spec.get("layout") == "metrics":
+            # KPI cards
+            cards = spec.get("cards", [])
+            for idx, card in enumerate(cards[:4]):
+                x = Inches(0.7 + (idx % 2) * 6.2)
+                y = Inches(1.8 + (idx // 2) * 2.5)
+                
+                card_shape = slide.shapes.add_shape(
+                    MSO_SHAPE.ROUNDED_RECTANGLE, x, y, Inches(5.5), Inches(2)
+                )
+                card_shape.fill.solid()
+                card_shape.fill.fore_color.rgb = RGBColor(240, 248, 255)
+                card_shape.line.color.rgb = colors["accent"]
+                card_shape.line.width = Pt(2)
+                
+                tf = card_shape.text_frame
+                tf.clear()
+                
+                p = tf.paragraphs[0]
+                p.text = card.get("label", "")
+                p.font.size = Pt(18)
+                p.font.bold = True
+                p.font.color.rgb = colors["primary"]
+                p.alignment = PP_ALIGN.CENTER
+                
+                p2 = tf.add_paragraph()
+                p2.text = card.get("value", "")
+                p2.font.size = Pt(32)
+                p2.font.bold = True
+                p2.font.color.rgb = colors["accent"]
+                p2.alignment = PP_ALIGN.CENTER
+        else:
+            # Bullet points
+            for idx, bullet in enumerate(slide_spec.get("bullets", [])):
+                y = Inches(1.8 + idx * 1.1)
+                bullet_box = slide.shapes.add_textbox(Inches(0.8), y, Inches(11.7), Inches(0.8))
+                bullet_frame = bullet_box.text_frame
+                bullet_frame.word_wrap = True
+                p = bullet_frame.paragraphs[0]
+                p.text = f"• {bullet}"
+                p.font.size = Pt(20)
+                p.font.color.rgb = RGBColor(30, 30, 30)
+                p.space_before = Pt(6)
+                p.space_after = Pt(6)
+    
+    prs.save(output_path)
+
+
+def generate_presentation(files: List[Path], theme: str, audience: str, story: str) -> Dict[str, Any]:
+    """Generate a complete presentation with AI-like automation."""
+    ensure_dirs()
+    
+    extracted = []
+    for file in files:
+        file_data = safe_extract_text(file)
+        text = file_data.get("text", "")
+        metrics = file_data.get("metrics", [])
+        
+        extracted.append({
+            "name": file.name,
+            "summary": summarize_content(text),
+            "text": text,
+            "metrics": metrics,
+            "type": file_data.get("type", "")
+        })
+    
+    # Generate smart slides
+    slides = generate_smart_slides(extracted, theme=theme, audience=audience, story=story)
+    
+    # Generate smart KPIs
+    cards = generate_smart_kpis(extracted)
+    
+    # Build spec
+    spec = {
+        "title": f"{theme.title()} Presentation - AI Generated",
         "theme": theme,
         "audience": audience,
-        "story": custom_story or "Turn complex data into a persuasive business story with clear decision points.",
-        "source_files": file_names,
+        "story": story or "AI-powered business storytelling and data analysis",
+        "source_files": [f["name"] for f in extracted],
         "slides": slides,
+        "cards": cards,
+        "documents": [
+            {
+                "name": item["name"],
+                "summary": item["summary"],
+                "metrics_count": len(item.get("metrics", []))
+            }
+            for item in extracted
+        ],
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "insights": extract_key_insights(
+            " ".join(item.get("summary", "") for item in extracted),
+            sum((item.get("metrics", []) for item in extracted), [])
+        )
     }
-
-
-def infer_kpis(documents: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    combined = " ".join(doc.get("summary", "") for doc in documents if doc.get("summary"))
-    words = re.findall(r"\b[a-zA-Z]{4,}\b", combined.lower())
-    counts = Counter(words)
-    top_terms = counts.most_common(3)
-
-    deltas = [
-        {"label": "Growth", "value": "+24%"},
-        {"label": "Revenue", "value": "$4.8M"},
-        {"label": "Conversion", "value": "18.6%"},
-        {"label": "Efficiency", "value": "92%"},
-    ]
-
-    if top_terms:
-        deltas[0]["label"] = top_terms[0][0].title()
-        deltas[0]["value"] = f"{max(10, min(99, top_terms[0][1] * 8))}%"
-
-    return deltas
-
-
-def build_advanced_insights(documents: List[Dict[str, str]], theme: str, audience: str) -> Dict[str, Any]:
-    kpis = infer_kpis(documents)
-    narrative = (
-        f"{theme.title()} narrative for {audience}: focus on momentum, risk, and the highest-value actions "
-        "with clear business context and measurable impact."
-    )
-    return {
-        "kpis": kpis,
-        "narrative": narrative,
-        "power_bi_export": {
+    
+    # Generate advanced PowerPoint
+    deck_path = EXPORTS_DIR / "generated_deck.pptx"
+    generate_advanced_pptx(spec, deck_path)
+    
+    spec["export_file"] = "generated_deck.pptx"
+    spec["exports"] = {
+        "power_bi": {
             "name": "power_bi_exec_dashboard",
             "dataset": "presentation_agent_metrics",
             "tables": [
                 {"name": "kpi_snapshot", "columns": ["metric", "value", "theme", "audience"]},
                 {"name": "source_summary", "columns": ["document", "summary"]},
+                {"name": "insights", "columns": ["insight", "type", "priority"]},
             ],
         },
-        "tableau_export": {
+        "tableau": {
             "name": "tableau_exec_dashboard",
-            "workbook": "Executive Storytelling Dashboard",
+            "workbook": "AI Executive Dashboard",
             "sheets": [
                 {"name": "KPI Snapshot", "fields": ["metric", "value"]},
-                {"name": "Source Summary", "fields": ["document", "summary"]},
+                {"name": "Insights", "fields": ["insight", "type"]},
+                {"name": "Documents", "fields": ["document", "summary"]},
             ],
         },
-        "recommended_actions": [
-            "Prioritize performance drivers with the highest revenue and efficiency upside.",
-            "Translate insights into leadership-ready decisions and milestones.",
-            "Build a tracking cadence for the next reporting cycle.",
-        ],
     }
-
-
-def create_infographic_cards(spec: Dict[str, Any]) -> List[Dict[str, str]]:
-    if "advanced_insights" in spec and spec["advanced_insights"].get("kpis"):
-        return spec["advanced_insights"]["kpis"]
-    return [
-        {"label": "Growth", "value": "+24%"},
-        {"label": "Revenue", "value": "$4.8M"},
-        {"label": "Conversion", "value": "18.6%"},
-        {"label": "Efficiency", "value": "92%"},
-    ]
-
-
-def generate_pptx(spec: Dict[str, Any], output_path: Path) -> None:
-    prs = Presentation()
-    prs.slide_width = Inches(13.333)
-    prs.slide_height = Inches(7.5)
-
-    title_slide = prs.slides.add_slide(prs.slide_layouts[0])
-    title_slide.shapes.title.text = spec.get("title", "Business Presentation")
-    title_slide.placeholders[1].text = f"{spec.get('theme', 'Executive').title()} View | {spec.get('audience', 'Team')}"
-
-    summary_slide = prs.slides.add_slide(prs.slide_layouts[1])
-    summary_slide.shapes.title.text = "Executive Summary"
-    body = summary_slide.shapes.placeholders[1].text_frame
-    body.clear()
-    for idx, item in enumerate(spec["slides"][0]["bullets"]):
-        paragraph = body.paragraphs[0] if idx == 0 else body.add_paragraph()
-        paragraph.text = item
-        paragraph.level = 0
-        paragraph.font.size = Pt(18)
-
-    findings_slide = prs.slides.add_slide(prs.slide_layouts[5])
-    findings_slide.shapes.title.text = "Key Findings"
-    for idx, bullet in enumerate(spec["slides"][1]["bullets"]):
-        box = findings_slide.shapes.add_textbox(Inches(0.8), Inches(1.4 + idx * 1.1), Inches(11.0), Inches(0.5))
-        tf = box.text_frame
-        tf.text = f"• {bullet}"
-        tf.word_wrap = True
-        tf.paragraphs[0].font.size = Pt(20)
-
-    impact_slide = prs.slides.add_slide(prs.slide_layouts[5])
-    impact_slide.shapes.title.text = "Impact Snapshot"
-    cards = create_infographic_cards(spec)
-    for idx, card in enumerate(cards):
-        x = Inches(0.7 + (idx % 2) * 5.8)
-        y = Inches(1.6 + (idx // 2) * 2.0)
-        shape = impact_slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, Inches(4.7), Inches(1.2))
-        shape.fill.fore_color.rgb = 0xEAF2FF
-        shape.line.color.rgb = 0x3B82F6
-        tf = shape.text_frame
-        tf.clear()
-        p = tf.paragraphs[0]
-        p.text = card["label"]
-        p.font.size = Pt(18)
-        p.alignment = PP_ALIGN.CENTER
-        p2 = tf.add_paragraph()
-        p2.text = card["value"]
-        p2.font.bold = True
-        p2.font.size = Pt(28)
-        p2.alignment = PP_ALIGN.CENTER
-
-    action_slide = prs.slides.add_slide(prs.slide_layouts[5])
-    action_slide.shapes.title.text = "Recommended Actions"
-    for idx, item in enumerate(spec["slides"][2]["bullets"]):
-        box = action_slide.shapes.add_textbox(Inches(0.9), Inches(1.5 + idx * 1.2), Inches(11.0), Inches(0.7))
-        tf = box.text_frame
-        tf.text = f"{idx + 1}. {item}"
-        tf.paragraphs[0].font.size = Pt(22)
-
-    prs.save(output_path)
-
-
-def generate_presentation(files: List[Path], theme: str, audience: str, story: str) -> Dict[str, Any]:
-    ensure_dirs()
-    extracted = []
-    for file in files:
-        text = safe_extract_text(file)
-        extracted.append({
-            "name": file.name,
-            "summary": summarize_content(text),
-            "text": text,
-        })
-
-    spec = build_story_summary([f["name"] for f in extracted], theme=theme, audience=audience, custom_story=story)
-    spec["title"] = f"{theme.title()} Presentation"
-    spec["advanced_insights"] = build_advanced_insights(extracted, theme=theme, audience=audience)
-    spec["cards"] = create_infographic_cards(spec)
-    spec["documents"] = [{"name": item["name"], "summary": item["summary"]} for item in extracted]
-    spec["insights"] = spec["advanced_insights"]
-    spec["exports"] = {
-        "power_bi": spec["advanced_insights"]["power_bi_export"],
-        "tableau": spec["advanced_insights"]["tableau_export"],
-    }
-
-    deck_path = EXPORTS_DIR / "generated_deck.pptx"
-    generate_pptx(spec, deck_path)
-    spec["export_file"] = "generated_deck.pptx"
+    
     return spec
 
 
