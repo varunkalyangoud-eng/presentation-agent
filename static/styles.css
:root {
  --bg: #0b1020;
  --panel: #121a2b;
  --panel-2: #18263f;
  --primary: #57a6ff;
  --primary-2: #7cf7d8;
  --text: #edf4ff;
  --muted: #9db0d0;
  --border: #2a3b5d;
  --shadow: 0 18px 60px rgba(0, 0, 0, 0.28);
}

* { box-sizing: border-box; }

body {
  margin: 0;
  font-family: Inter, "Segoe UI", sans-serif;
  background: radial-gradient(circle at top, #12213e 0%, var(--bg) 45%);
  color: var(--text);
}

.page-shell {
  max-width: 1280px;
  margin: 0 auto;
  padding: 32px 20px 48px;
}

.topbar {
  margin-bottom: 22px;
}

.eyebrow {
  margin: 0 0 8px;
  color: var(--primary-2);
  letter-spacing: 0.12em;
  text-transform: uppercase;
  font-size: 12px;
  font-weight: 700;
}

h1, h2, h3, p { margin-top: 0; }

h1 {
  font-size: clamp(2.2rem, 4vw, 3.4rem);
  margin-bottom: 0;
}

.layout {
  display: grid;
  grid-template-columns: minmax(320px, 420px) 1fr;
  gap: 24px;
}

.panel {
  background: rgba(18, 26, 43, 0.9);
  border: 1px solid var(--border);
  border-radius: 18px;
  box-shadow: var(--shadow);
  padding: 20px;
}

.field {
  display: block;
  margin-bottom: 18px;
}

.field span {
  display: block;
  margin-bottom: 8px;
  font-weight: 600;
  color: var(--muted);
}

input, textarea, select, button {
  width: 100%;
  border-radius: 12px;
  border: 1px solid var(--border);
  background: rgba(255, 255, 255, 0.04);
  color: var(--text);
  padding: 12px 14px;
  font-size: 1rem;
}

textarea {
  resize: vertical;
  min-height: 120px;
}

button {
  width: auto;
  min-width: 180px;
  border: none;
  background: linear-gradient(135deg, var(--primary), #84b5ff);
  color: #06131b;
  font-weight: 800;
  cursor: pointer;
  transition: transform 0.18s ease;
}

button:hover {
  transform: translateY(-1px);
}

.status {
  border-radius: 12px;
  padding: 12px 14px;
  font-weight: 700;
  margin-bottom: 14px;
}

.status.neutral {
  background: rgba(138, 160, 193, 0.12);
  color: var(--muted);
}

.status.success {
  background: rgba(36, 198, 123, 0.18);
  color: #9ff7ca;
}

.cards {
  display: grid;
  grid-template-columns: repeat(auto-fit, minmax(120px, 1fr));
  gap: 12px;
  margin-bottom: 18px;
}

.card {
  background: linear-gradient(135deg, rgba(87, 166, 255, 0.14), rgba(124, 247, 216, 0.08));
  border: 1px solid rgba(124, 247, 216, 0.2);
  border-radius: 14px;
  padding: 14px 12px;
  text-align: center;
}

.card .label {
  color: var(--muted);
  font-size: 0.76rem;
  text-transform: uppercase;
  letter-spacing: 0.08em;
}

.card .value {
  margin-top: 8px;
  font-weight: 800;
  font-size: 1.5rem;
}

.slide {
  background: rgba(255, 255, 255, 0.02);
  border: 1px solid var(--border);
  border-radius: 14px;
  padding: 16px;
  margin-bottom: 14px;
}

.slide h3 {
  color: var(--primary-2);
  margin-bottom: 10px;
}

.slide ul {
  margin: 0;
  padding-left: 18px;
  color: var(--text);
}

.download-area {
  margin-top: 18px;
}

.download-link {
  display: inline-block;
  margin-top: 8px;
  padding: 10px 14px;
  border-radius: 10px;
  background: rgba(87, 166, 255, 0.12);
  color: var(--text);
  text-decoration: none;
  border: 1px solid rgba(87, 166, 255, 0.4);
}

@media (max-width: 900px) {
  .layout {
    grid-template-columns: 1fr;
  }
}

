@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Presentation Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">AI-powered storytelling</p>
+          <h1>Presentation Agent</h1>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel form-panel">
+          <h2>Create a deck</h2>
+          <form id="presentation-form" enctype="multipart/form-data">
+            <label class="field">
+              <span>Upload files</span>
+              <input type="file" id="files" name="files" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg" />
+            </label>
+
+            <label class="field">
+              <span>Theme</span>
+              <select name="theme">
+                <option value="executive">Executive</option>
+                <option value="sales">Sales</option>
+                <option value="product">Product</option>
+                <option value="marketing">Marketing</option>
+                <option value="investor">Investor</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Audience</span>
+              <input type="text" name="audience" value="Leadership team" />
+            </label>
+
+            <label class="field">
+              <span>Story direction</span>
+              <textarea name="story" rows="4" placeholder="Describe the business message and key story you want the deck to tell."></textarea>
+            </label>
+
+            <button type="submit">Generate Presentation</button>
+          </form>
+        </section>
+
+        <section class="panel output-panel">
+          <h2>Deck preview</h2>
+          <div id="status" class="status neutral">Waiting for upload.</div>
+          <div id="cards" class="cards"></div>
+          <div id="slides" class="slides"></div>
+          <div id="download-area" class="download-area"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
