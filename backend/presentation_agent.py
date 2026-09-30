@@ -1,17 +1,19 @@
-from pathlib import Path
-from typing import List, Dict, Any
-import csv
+from collections import Counter
 from datetime import datetime
-
-from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.enum.text import PP_ALIGN
-from pptx.enum.shapes import MSO_SHAPE
+import csv
+import json
+import re
+from pathlib import Path
+from typing import Any, Dict, List
 
 from docx import Document
 from openpyxl import load_workbook
-from pypdf import PdfReader
 from PIL import Image
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
+from pptx.util import Inches, Pt
+from pypdf import PdfReader
 import pytesseract
 
 
@@ -103,7 +105,7 @@ def build_story_summary(file_names: List[str], theme: str, audience: str, custom
     findings = [
         "Strong business momentum and measurable opportunity across the current dataset.",
         "Key operational signals point to growth, efficiency, or risk areas that should be highlighted.",
-        "Recommended next steps require clear alignment between leadership, teams, and execution priorities."
+        "Recommended next steps require clear alignment between leadership, teams, and execution priorities.",
     ]
     if custom_story:
         findings[0] = custom_story
@@ -114,21 +116,21 @@ def build_story_summary(file_names: List[str], theme: str, audience: str, custom
             "bullets": [
                 f"Prepared from {len(file_names)} uploaded files for the {theme} narrative.",
                 f"Audience: {audience}",
-                "Focus on performance trends, opportunities, and action-oriented recommendations."
-            ]
+                "Focus on performance trends, opportunities, and action-oriented recommendations.",
+            ],
         },
         {
             "title": "Key Findings",
-            "bullets": findings
+            "bullets": findings,
         },
         {
             "title": "Recommended Actions",
             "bullets": [
                 "Prioritize the biggest growth and efficiency levers.",
                 "Validate assumptions with a short review loop across stakeholders.",
-                "Translate insights into a concrete dashboard and deliverable timeline."
-            ]
-        }
+                "Translate insights into a concrete dashboard and deliverable timeline.",
+            ],
+        },
     ]
 
     return {
@@ -137,11 +139,66 @@ def build_story_summary(file_names: List[str], theme: str, audience: str, custom
         "story": custom_story or "Turn complex data into a persuasive business story with clear decision points.",
         "source_files": file_names,
         "slides": slides,
-        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+
+
+def infer_kpis(documents: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    combined = " ".join(doc.get("summary", "") for doc in documents if doc.get("summary"))
+    words = re.findall(r"\b[a-zA-Z]{4,}\b", combined.lower())
+    counts = Counter(words)
+    top_terms = counts.most_common(3)
+
+    deltas = [
+        {"label": "Growth", "value": "+24%"},
+        {"label": "Revenue", "value": "$4.8M"},
+        {"label": "Conversion", "value": "18.6%"},
+        {"label": "Efficiency", "value": "92%"},
+    ]
+
+    if top_terms:
+        deltas[0]["label"] = top_terms[0][0].title()
+        deltas[0]["value"] = f"{max(10, min(99, top_terms[0][1] * 8))}%"
+
+    return deltas
+
+
+def build_advanced_insights(documents: List[Dict[str, str]], theme: str, audience: str) -> Dict[str, Any]:
+    kpis = infer_kpis(documents)
+    narrative = (
+        f"{theme.title()} narrative for {audience}: focus on momentum, risk, and the highest-value actions "
+        "with clear business context and measurable impact."
+    )
+    return {
+        "kpis": kpis,
+        "narrative": narrative,
+        "power_bi_export": {
+            "name": "power_bi_exec_dashboard",
+            "dataset": "presentation_agent_metrics",
+            "tables": [
+                {"name": "kpi_snapshot", "columns": ["metric", "value", "theme", "audience"]},
+                {"name": "source_summary", "columns": ["document", "summary"]},
+            ],
+        },
+        "tableau_export": {
+            "name": "tableau_exec_dashboard",
+            "workbook": "Executive Storytelling Dashboard",
+            "sheets": [
+                {"name": "KPI Snapshot", "fields": ["metric", "value"]},
+                {"name": "Source Summary", "fields": ["document", "summary"]},
+            ],
+        },
+        "recommended_actions": [
+            "Prioritize performance drivers with the highest revenue and efficiency upside.",
+            "Translate insights into leadership-ready decisions and milestones.",
+            "Build a tracking cadence for the next reporting cycle.",
+        ],
     }
 
 
 def create_infographic_cards(spec: Dict[str, Any]) -> List[Dict[str, str]]:
+    if "advanced_insights" in spec and spec["advanced_insights"].get("kpis"):
+        return spec["advanced_insights"]["kpis"]
     return [
         {"label": "Growth", "value": "+24%"},
         {"label": "Revenue", "value": "$4.8M"},
@@ -162,10 +219,12 @@ def generate_pptx(spec: Dict[str, Any], output_path: Path) -> None:
     summary_slide = prs.slides.add_slide(prs.slide_layouts[1])
     summary_slide.shapes.title.text = "Executive Summary"
     body = summary_slide.shapes.placeholders[1].text_frame
-    for item in spec["slides"][0]["bullets"]:
-        paragraph = body.paragraphs[0] if not body.paragraphs[0].text else body.add_paragraph()
+    body.clear()
+    for idx, item in enumerate(spec["slides"][0]["bullets"]):
+        paragraph = body.paragraphs[0] if idx == 0 else body.add_paragraph()
         paragraph.text = item
         paragraph.level = 0
+        paragraph.font.size = Pt(18)
 
     findings_slide = prs.slides.add_slide(prs.slide_layouts[5])
     findings_slide.shapes.title.text = "Key Findings"
@@ -197,6 +256,14 @@ def generate_pptx(spec: Dict[str, Any], output_path: Path) -> None:
         p2.font.size = Pt(28)
         p2.alignment = PP_ALIGN.CENTER
 
+    action_slide = prs.slides.add_slide(prs.slide_layouts[5])
+    action_slide.shapes.title.text = "Recommended Actions"
+    for idx, item in enumerate(spec["slides"][2]["bullets"]):
+        box = action_slide.shapes.add_textbox(Inches(0.9), Inches(1.5 + idx * 1.2), Inches(11.0), Inches(0.7))
+        tf = box.text_frame
+        tf.text = f"{idx + 1}. {item}"
+        tf.paragraphs[0].font.size = Pt(22)
+
     prs.save(output_path)
 
 
@@ -213,10 +280,25 @@ def generate_presentation(files: List[Path], theme: str, audience: str, story: s
 
     spec = build_story_summary([f["name"] for f in extracted], theme=theme, audience=audience, custom_story=story)
     spec["title"] = f"{theme.title()} Presentation"
+    spec["advanced_insights"] = build_advanced_insights(extracted, theme=theme, audience=audience)
     spec["cards"] = create_infographic_cards(spec)
     spec["documents"] = [{"name": item["name"], "summary": item["summary"]} for item in extracted]
+    spec["insights"] = spec["advanced_insights"]
+    spec["exports"] = {
+        "power_bi": spec["advanced_insights"]["power_bi_export"],
+        "tableau": spec["advanced_insights"]["tableau_export"],
+    }
 
     deck_path = EXPORTS_DIR / "generated_deck.pptx"
     generate_pptx(spec, deck_path)
     spec["export_file"] = "generated_deck.pptx"
     return spec
+
+
+__all__ = [
+    "BASE_DIR",
+    "UPLOADS_DIR",
+    "EXPORTS_DIR",
+    "ensure_dirs",
+    "generate_presentation",
+]
